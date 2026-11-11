@@ -1,0 +1,17 @@
+[package]
+# Ported from: Mekanism: Generators 10.7.19.85 (mekanism/Mekanism, MIT),
+# Minecraft Java 1.21.1 NeoForge. Local-only until the maintainer approves
+# publishing.
+name = "horizon-mekanismgenerators"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Mekanism: Generators for Horizon: the Heat Generator (slice 1)"
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/mekanismgenerators/runtime.rs"
+
+[workspace]
+resolver = "2"

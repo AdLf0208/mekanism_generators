@@ -1,0 +1,12 @@
+# Port-owned content mod for Mekanism: Generators slice 1 (the Heat Generator).
+# The blockstate, models, textures, lang, loot and recipe are carried from
+# Mekanism: Generators 10.7.19.85 (mekanism/Mekanism, MIT). The three plate
+# textures the model shares with Mekanism are carried into this namespace
+# because a content mod cannot ship another mod's assets. The Rust is a
+# clean-room rewrite.
+id = "mekanismgenerators"
+name = "Mekanism: Generators"
+version = "10.7.19"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]

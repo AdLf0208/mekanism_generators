@@ -1,0 +1,50 @@
+{
+  "variants": {
+    "facing=down,open=false": {
+      "x": 90,
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=down,open=true": {
+      "x": 90,
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=east,open=false": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": 90
+    },
+    "facing=east,open=true": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": 90
+    },
+    "facing=north,open=false": {
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=north,open=true": {
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=south,open=false": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": 180
+    },
+    "facing=south,open=true": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": 180
+    },
+    "facing=up,open=false": {
+      "x": -90,
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=up,open=true": {
+      "x": -90,
+      "model": "mekanismgenerators:block/heat_generator"
+    },
+    "facing=west,open=false": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": -90
+    },
+    "facing=west,open=true": {
+      "model": "mekanismgenerators:block/heat_generator",
+      "y": -90
+    }
+  }
+}

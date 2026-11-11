@@ -1,0 +1,49 @@
+id = "mekanismgenerators"
+kind = "native-mod"
+name = "Mekanism: Generators"
+summary = "Heat generator and the graphite/lava energy chain from Mekanism: Generators, with the jar's burn times and FE rates."
+description = """
+A port of [mekanismgenerators](mekanism/Mekanism) for Horizon.
+
+**Implemented so far**
+
+- `mekanismgenerators:heat_generator`, one block:
+- a **fuel slot** (container, slot 0) that takes any item with an engine burn
+- time and turns one item a tick into `burnTime / 20` mB of lava (coal 80 mB,
+- a lava bucket 1,000 mB; a crafting remainder replaces the stack);
+- a **24,000 mB lava tank** (this port's saved int `lava`; upstream's fluid
+- capability is not declared in this slice, so only the fuel slot fills it);
+- a **heat capacitor** (10 heat units) fed by 200 heat/t while lava burns, 30
+- per lava side and 100 in the Nether, cooled by the 0.5 thermal-efficiency
+
+**Not yet ported**
+
+- No FE output.** The generator fills its own buffer and nothing pushes it
+- into a neighbour (the brief's slice boundary; the transfer helpers exist at
+- this pin, so a cable slice can add it).
+- No fluid capability.** The tank is a saved int; no pipe can fill it and
+- nothing can read it as lava (upstream's `lavaTank` is a fluid handler).
+- No GUI.** Fuel goes in through the container (automation's path, and what
+- the check uses) and state is read with the command.
+- No `active` block state**, so the `heat_generator_active` model, the
+
+Original copyright and licence notices are kept in this repository. Pinned to
+Horizon 1d63e0a and horizon-mixins 5a64af93. Help with the remaining slices is
+welcome.
+"""
+authors = ["AdLf0208"]
+owners = ["AdLf0208"]
+owner_ids = [107615167]
+license = "MIT"
+source = "https://github.com/AdLf0208/mekanismgenerators"
+icon = "icons/mekanismgenerators.png"
+categories = ["utility"]
+tags = ["port", "horizon"]
+
+[[versions]]
+version = "0.1.0"
+published = "2026-11-10"
+game = "26.3"
+file = "mekanismgenerators.hnmod"
+sha256 = "bd07951573c8d3ce9d391a2fe491be815e8cda3215b846dae7a6df65951b1323"
+changelog = "First release"

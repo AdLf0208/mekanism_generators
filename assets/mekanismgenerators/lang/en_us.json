@@ -1,0 +1,8 @@
+{
+  "advancements.mekanismgenerators.heat_generator.description": "Craft a Heat Generator to start making power",
+  "advancements.mekanismgenerators.heat_generator.title": "Your First Generator",
+  "block.mekanismgenerators.heat_generator": "Heat Generator",
+  "container.mekanismgenerators.heat_generator": "Heat Generator",
+  "description.mekanismgenerators.heat_generator": "A generator that uses the heat of lava or other burnable resources to produce energy.",
+  "item.mekanismgenerators.heat_generator": "Heat Generator"
+}

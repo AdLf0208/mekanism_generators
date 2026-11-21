@@ -9,8 +9,8 @@
 //! compound reads back, and the exact line `/mekanismgenerators info` prints.
 use mod_api::{
     self, BlockEntityEvent, BlockEntityPart, BlockEntityTickEvent, BlockEntityTickReply,
-    BlockEntityTicksEvent, BlockPart, Compound, Direction, Host, ItemStack, LevelRef, LevelSide,
-    ModContainer, ModEnergyBuffer, ServerHost, Tag,
+    BlockEntityTicksEvent, BlockPart, Compound, Direction, ENERGY, Host, HostTransaction,
+    ItemStack, LevelRef, LevelSide, ModContainer, ModEnergyBuffer, ServerHost, Tag,
 };
 
 use crate::runtime::{
@@ -121,6 +121,8 @@ pub(crate) struct Sight {
     pub(crate) temperature: f64,
     pub(crate) produced: i32,
     pub(crate) burning: bool,
+    /// The block state's `facing`: the side the generator emits from.
+    pub(crate) facing: Option<String>,
     pub(crate) fuel: Option<(String, u32)>,
 }
 
@@ -132,9 +134,10 @@ impl Sight {
             Some((item, count)) => format!("{item} x{count}"),
             None => "empty".to_owned(),
         };
+        let facing = self.facing.as_deref().unwrap_or("unknown");
         format!(
             "{} at {},{},{}: {}/{} FE, lava {}/{} mB, temp {:.1} K, producing {} FE/t, burning {}, \
-             fuel {fuel}, t={t}",
+             facing {facing}, fuel {fuel}, t={t}",
             self.id,
             self.pos[0],
             self.pos[1],
@@ -175,6 +178,7 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
         temperature: double(&saved, "heat", AMBIENT_TEMPERATURE * HEAT_CAPACITY) / HEAT_CAPACITY,
         produced: int(&saved, "produced"),
         burning: int(&saved, "burning") != 0,
+        facing: level.block_property(&*host, pos, "facing"),
         fuel,
     };
     Some(sight.line(level.game_time(&*host).unwrap_or(0)))
@@ -238,6 +242,74 @@ fn consume(host: &dyn Host, stack: &ItemStack) -> Option<ItemStack> {
         .or_else(|| host.item_crafting_remainder(stack))
 }
 
+/// The face a block state's `facing` names: the carried barrel template's
+/// property, which is the direction the generator faces and therefore the side
+/// `TileEntityGenerator` emits from (`ENERGY_SIDES = {RelativeSide.FRONT}`).
+fn facing_of(name: &str) -> Option<Direction> {
+    match name {
+        "down" => Some(Direction::Down),
+        "up" => Some(Direction::Up),
+        "north" => Some(Direction::North),
+        "south" => Some(Direction::South),
+        "west" => Some(Direction::West),
+        "east" => Some(Direction::East),
+        _ => None,
+    }
+}
+
+/// The side this generator emits from: its block state's `facing`, or `None`
+/// when the state names no direction this can read (nothing is pushed then).
+fn emitting_face(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<Direction> {
+    facing_of(level.block_property(host, pos, "facing")?.as_str())
+}
+
+/// Push the buffer into the block in front, as `TileEntityGenerator`'s
+/// `CableUtils.emit` does on its one `ENERGY_SIDES` front side: at most
+/// `MAX_OUTPUT` FE a tick, only what the front block's own handler accepts, and
+/// only out of this generator's buffer.
+///
+/// The buffer lives in the compound this tick holds, so the move is measured by
+/// the acceptor's reply instead of extracting through our own capability: that
+/// would read the state the tick has already taken out of the block entity.
+/// Answers the FE that left.
+fn emit_front(
+    host: &mut dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    state: &mut HeatGenerator,
+) -> i32 {
+    let Some(face) = emitting_face(&*host, level, pos) else {
+        return 0;
+    };
+    let [dx, dy, dz] = face.normal();
+    let at = [pos[0] + dx, pos[1] + dy, pos[2] + dz];
+    let Some(target) = level.capability(&mut *host, &ENERGY, at, Some(face.opposite())) else {
+        return 0;
+    };
+    let stored = to_i32(target.amount(&mut *host));
+    let room = to_i32(target.capacity(&mut *host)).saturating_sub(stored);
+    let offer = state.output_offer(room, MAX_OUTPUT);
+    if offer == 0 {
+        return 0;
+    }
+    // One transaction, so an acceptor that over-answers moves nothing at all.
+    let accepted = host
+        .transaction(|host, tx| Ok::<u32, ()>(target.insert(host, tx, to_u32(offer))))
+        .map_or(0, to_i32);
+    state.emit(accepted)
+}
+
+/// A capability's amount as the runtime's `i32` (it never exceeds a buffer's
+/// capacity, which is an `i32` here).
+fn to_i32(amount: u32) -> i32 {
+    i32::try_from(amount).unwrap_or(i32::MAX)
+}
+
+/// A wanted amount as the capability's `u32` (positive, by every caller).
+fn to_u32(amount: i32) -> u32 {
+    u32::try_from(amount.max(0)).unwrap_or(0)
+}
+
 /// The generator's behaviour: a block entity, ticked on the server.
 pub(crate) struct HeatGeneratorPart;
 
@@ -282,6 +354,10 @@ impl BlockEntityPart for HeatGeneratorPart {
         }
         let level = host.level(host.dimension());
         let tick = state.tick(environment(host, level, pos));
+        // Upstream emits after the generator's own update, into the front side.
+        if let Some(level) = level {
+            emit_front(host, level, pos, &mut state);
+        }
         write(&mut saved, &state, tick.produced, tick.burned_lava);
         if let Tag::Compound(nbt) = saved {
             event.entity.nbt = nbt;
@@ -358,12 +434,13 @@ mod tests {
             temperature: 675.46,
             produced: 112,
             burning: true,
+            facing: Some("north".to_owned()),
             fuel: None,
         };
         assert_eq!(
             sight.line(768),
             "mekanismgenerators:heat_generator at 0,100,0: 49152/160000 FE, lava 10730/24000 mB, \
-             temp 675.5 K, producing 112 FE/t, burning true, fuel empty, t=768"
+             temp 675.5 K, producing 112 FE/t, burning true, facing north, fuel empty, t=768"
         );
         let with_fuel = Sight {
             fuel: Some(("minecraft:coal".to_owned(), 55)),
@@ -372,8 +449,25 @@ mod tests {
         assert!(
             with_fuel
                 .line(459)
-                .ends_with(", burning true, fuel minecraft:coal x55, t=459"),
+                .ends_with(", burning true, facing north, fuel minecraft:coal x55, t=459"),
             "a loaded fuel slot prints its item and count"
+        );
+    }
+
+    #[test]
+    fn the_emitting_face_is_the_one_the_block_state_names() {
+        assert_eq!(facing_of("north"), Some(Direction::North));
+        assert_eq!(facing_of("south"), Some(Direction::South));
+        assert_eq!(facing_of("west"), Some(Direction::West));
+        assert_eq!(facing_of("east"), Some(Direction::East));
+        assert_eq!(facing_of("up"), Some(Direction::Up));
+        assert_eq!(facing_of("down"), Some(Direction::Down));
+        assert_eq!(facing_of("sideways"), None, "an unknown name emits nowhere");
+        assert_eq!(facing_of(""), None);
+        assert_eq!(
+            Direction::North.normal(),
+            [0, 0, -1],
+            "north is -z: the e2e's cube goes there"
         );
     }
 }

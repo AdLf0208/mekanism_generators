@@ -14,13 +14,44 @@
 //! embedded-content helper has no successor: one `.hmod` carries the content and
 //! the code, which is what that helper existed to work around.
 use mod_api::{
-    self, Command, CommandArgumentValue, Flow, Hooks, RegisterCommandsEvent, Registrar,
-    RegistrationContext, RunModCommandEvent, ServerHost, Text,
+    self, Command, CommandArgumentValue, CommandSource, Flow, Hooks, LevelRef,
+    RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent, ServerHost, Text,
 };
 
 mod heat_generator;
 
 pub mod runtime;
+
+/// Whether this command source may read the generator at `pos`: an operator
+/// (permission ≥ 2), or a player in the same level within
+/// [`runtime::INSPECT_RANGE`] of the block.
+fn may_read(host: &dyn ServerHost, source: &CommandSource, level: LevelRef, pos: [i32; 3]) -> bool {
+    let op = source.permission().level() >= runtime::LEVEL_ADMINS;
+    match source {
+        CommandSource::Player { player, .. } => {
+            let same_level = player.level(host) == Some(level);
+            let distance = player
+                .entity()
+                .position(host)
+                .map(|at| {
+                    let block = [
+                        f64::from(pos[0]) + 0.5,
+                        f64::from(pos[1]) + 0.5,
+                        f64::from(pos[2]) + 0.5,
+                    ];
+                    (0..3)
+                        .map(|axis| (at[axis] - block[axis]).powi(2))
+                        .sum::<f64>()
+                        .sqrt()
+                })
+                .unwrap_or(f64::MAX);
+            runtime::may_inspect(op, same_level, distance)
+        }
+        // The console, a command block and a function carry a permission of
+        // their own; none has a body to be near the machine.
+        _ => op,
+    }
+}
 
 #[derive(Default)]
 struct Mod;
@@ -69,8 +100,21 @@ impl Hooks for Mod {
             return Flow::Continue;
         };
         let line = match literals.as_slice() {
-            ["mekanismgenerators", "info"] => heat_generator::info_line(host, *pos)
-                .unwrap_or_else(|| "No block entity there.".to_owned()),
+            ["mekanismgenerators", "info"] => {
+                let Some(level) = host.level(host.dimension()) else {
+                    return Flow::Continue;
+                };
+                if !may_read(&*host, event.source, level, *pos) {
+                    let line = format!(
+                        "You must be an operator or within {:.0} blocks of the generator.",
+                        runtime::INSPECT_RANGE
+                    );
+                    let _ = host.commands().feedback(Text::literal(line));
+                    return Flow::Cancel;
+                }
+                heat_generator::info_line(host, *pos)
+                    .unwrap_or_else(|| "No block entity there.".to_owned())
+            }
             ["mekanismgenerators", "energy"] => {
                 let Some(CommandArgumentValue::Integer(amount)) = event.command.argument("amount")
                 else {

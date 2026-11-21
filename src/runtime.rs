@@ -205,6 +205,27 @@ impl HeatGenerator {
         }
     }
 
+    /// What this tick offers the block in front: the buffer, capped by the
+    /// output rate and by the room the front block has.
+    ///
+    /// `TileEntityGenerator.onUpdateServer` calls `CableUtils.emit(outputs,
+    /// container, getMaxOutput())`, which extracts at most `getMaxOutput()` and
+    /// lets the acceptor take what fits, so the offer is the same arithmetic
+    /// before the acceptor is asked.
+    #[must_use]
+    pub fn output_offer(&self, room: i32, max_output: i32) -> i32 {
+        self.energy.min(max_output.max(0)).min(room.max(0)).max(0)
+    }
+
+    /// Take the FE the front block accepted out of the buffer, and answer how
+    /// much left it. An over-answer cannot take more than the buffer holds, and
+    /// a refused one (`0`) takes nothing.
+    pub fn emit(&mut self, accepted: i32) -> i32 {
+        let moved = accepted.clamp(0, self.energy.max(0));
+        self.energy -= moved;
+        moved
+    }
+
     /// `ITileHeatHandler.simulateEnvironment`: each face leaks
     /// `(temperature - ambient) / (air + insulation + conduction)` kelvin of
     /// the capacitor's heat.
@@ -224,6 +245,18 @@ fn carnot_efficiency(temperature: f64, ambient: f64) -> f64 {
     let cold = temperature.min(ambient);
     let hot = temperature.max(ambient);
     if hot <= 0.0 { 0.0 } else { 1.0 - cold / hot }
+}
+
+/// How far a player without operator permission may be from a generator to read it.
+pub const INSPECT_RANGE: f64 = 8.0;
+
+/// `Commands.LEVEL_ADMINS`: the permission level that bypasses the reach check.
+pub const LEVEL_ADMINS: u8 = 2;
+
+/// Whether a caller may read a generator's contents: an operator, or a player in
+/// the same level within [`INSPECT_RANGE`] of the block.
+pub fn may_inspect(op: bool, same_level: bool, distance: f64) -> bool {
+    op || (same_level && distance <= INSPECT_RANGE)
 }
 
 #[cfg(test)]
@@ -474,5 +507,66 @@ mod tests {
         }
         assert!(six.energy > one.energy, "six sides beat one");
         assert!(one.energy > 0, "one side already heats it");
+    }
+
+    #[test]
+    fn the_front_block_is_offered_the_buffer_up_to_the_output_rate() {
+        let mut generator = HeatGenerator::new();
+        generator.energy = 50_000;
+        assert_eq!(
+            generator.output_offer(i32::MAX, MAX_OUTPUT),
+            MAX_OUTPUT,
+            "the rate caps what a large buffer offers"
+        );
+        generator.energy = 500;
+        assert_eq!(
+            generator.output_offer(i32::MAX, MAX_OUTPUT),
+            500,
+            "a small buffer offers only what it holds"
+        );
+        generator.energy = 50_000;
+        assert_eq!(
+            generator.output_offer(300, MAX_OUTPUT),
+            300,
+            "the front block's room caps the offer"
+        );
+        assert_eq!(
+            generator.output_offer(0, MAX_OUTPUT),
+            0,
+            "a full front block gets nothing"
+        );
+        assert_eq!(
+            HeatGenerator::new().output_offer(i32::MAX, MAX_OUTPUT),
+            0,
+            "an empty buffer offers nothing"
+        );
+    }
+
+    #[test]
+    fn emitting_takes_only_what_the_front_block_accepted() {
+        let mut generator = HeatGenerator::new();
+        generator.energy = 1_000;
+        assert_eq!(
+            generator.emit(400),
+            400,
+            "the accepted FE leaves the buffer"
+        );
+        assert_eq!(generator.energy, 600);
+        assert_eq!(
+            generator.emit(5_000),
+            600,
+            "an over-answer cannot take more than the buffer holds"
+        );
+        assert_eq!(generator.energy, 0);
+        assert_eq!(generator.emit(-5), 0, "a negative answer moves nothing");
+        assert_eq!(generator.energy, 0);
+    }
+
+    #[test]
+    fn a_readout_needs_an_operator_reach_or_the_same_level() {
+        assert!(may_inspect(true, false, f64::MAX), "an operator");
+        assert!(may_inspect(false, true, 3.0), "a player in reach");
+        assert!(!may_inspect(false, true, 8.5), "out of reach");
+        assert!(!may_inspect(false, false, 1.0), "another level");
     }
 }

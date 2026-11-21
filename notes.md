@@ -701,3 +701,202 @@ for its tanks.
 > `impl mod_api::Hooks` methods against typed hosts/events (7 hooks mapped, 0 recorded as
 > gaps; the `content_root` embedded-content workaround is no longer needed, because one
 > `.hmod` carries the content and the code); `runtime.rs` and its tests unchanged.
+
+## Review fixes (2026-11-18)
+
+`var/review-all/1189-mekanismgenerators.md`, the one finding fixed; version **0.2.1** (32,286 B,
+sha256 `93074380504c2feb932c6a1ee9ace3898bdb225bb47aa18c7147f23a13181add`).
+
+- **Info disclosure (src/heat_generator.rs:165, src/lib.rs:52).** `/mekanismgenerators info`
+  read the fuel item and count from any loaded generator at caller-supplied coordinates. It now
+  requires an operator (permission ≥ 2) or a player in the same level within 8 blocks of the
+  block; any other caller gets a generic refusal and no fuel/energy line. Pure rule:
+  `runtime::may_inspect`, pinned by `a_readout_needs_an_operator_reach_or_the_same_level`.
+
+### In-game scenario updated (harness limitation, not a weakening)
+
+The e2e inserted coal with `ctl container 0 100 0 …`; at this pin that command reports
+`container is full` for a native mod block entity (the agent's world mirror has no slots for it,
+while the block entity itself works). The scenario now loads a vanilla hopper above the generator
+and lets it push through the block's declared container capability — the automation path a player
+uses — and asserts the same chain: coal becomes lava, burning is true, 112 FE/t into the buffer, a
+full buffer produces no FE, a drained one resumes, and FE/lava/heat survive a save and relaunch.
+The old `lava > 2000` check became `0 < lava < 1000` because a one-at-a-time feed keeps the tank
+nearly empty by construction; fuel consumption is also pinned by the hopper's falling stock. PASS
+line and the full run are in `ports/_shared/evidence/mekanismgenerators-e2e/`.
+
+Ladder: `cargo test` passed; `cargo clippy --all-targets -- -D warnings` exit 0; `cargo fmt --check`
+clean; `cargo horizon-mod build` twice byte-identical; `check` and `fits` exit 0. In-game:
+`launcher-game.sh run mekanismgenerators` → `PASS` + `EXIT:0`; `GAME=$CONTROL_GAME` → `FAIL`
+(`Unknown block type 'mekanismgenerators:heat_generator'`) + `EXIT:1`.
+
+## Slice 2 — the energy output (version 0.2.2, 2026-11-21)
+
+Pin **Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (nightly 2026-11-20) + mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`; the campaign repin from `0b14f8a`. The SDK in
+`.horizon/sdk` was refreshed from the `0a875da` release (**trap**: bumping `[native] horizon` alone
+leaves the old SDK in place, and the next build silently compiles against `0b14f8a`).
+
+**The gap line this slice closes** is gap 1 of §"Deviations and gaps (slice 1)" and the registry
+entry's own "No FE *output* into a neighbour":
+
+> **No FE output.** The generator fills its own buffer and nothing pushes it into a neighbour (the
+> brief's slice boundary; the transfer helpers exist at this pin, so a cable slice can add it).
+
+It fits the tier as a **machines** feature (the block entity, its FE capability and its tick are
+already here; this adds the energy balance's other half), and it is the family the parent mod makes
+provable: `mekanism:basic_energy_cube` (our own port, merged) is storage — it takes FE on every face
+and pulls from nothing — so a cube that gains FE beside the generator's `facing` face gained it
+*from this generator*, and a cube on the opposite face must stay empty.
+
+### Upstream rule → the code
+
+| Upstream (`TileEntityGenerator`, tag `v1.21.1-10.7.19.85`) | This port |
+|---|---|
+| `ENERGY_SIDES = {RelativeSide.FRONT}` — one output side, the block's `facing` | `emitting_face` reads the block state's `facing` (`level.block_property`) and emits into that neighbour |
+| `getMaxOutput()` = `MAX_PRODUCTION x 2` = 1,020 FE/t | `MAX_OUTPUT` (unchanged constant) caps the offer |
+| `CableUtils.emit(outputs, container, getMaxOutput())`: extract `min(stored, maxOutput)`, let the acceptor take what fits, subtract what it took | `runtime::HeatGenerator::output_offer(room, max_output)` = `min(stored, max_output, room)`; `HeatGenerator::emit(accepted)` subtracts the acceptor's reply |
+| emit runs after the generator's own update (`onUpdateServer`) | `emit_front` is called after `state.tick`, before the state is written back |
+| the acceptor answers through its own handler (`IStrictEnergyHandler.insert`) | `level.capability(host, &ENERGY, neighbour, Some(face.opposite()))` → `insert(host, tx, want)` in one `host.transaction`, the `powah`/`mekanism` cable shape |
+
+The buffer is this port's saved int `energy`, not a capability handle read back: during the tick the
+compound has been taken out of the block entity, so the move is measured by the **acceptor's reply**
+(`insert` returns what it took) and the buffer loses exactly that. An acceptor that over-answers
+aborts the transaction and nothing moves (`output_offer`/`emit` clamp as well).
+
+### Red → green
+
+1. **Unit red** (`ports/_shared/evidence/mekanismgenerators/sdk-output-red.log`, `cargo_exit 101`):
+   the two new runtime tests — `the_front_block_is_offered_the_buffer_up_to_the_output_rate` and
+   `emitting_takes_only_what_the_front_block_accepted` — did not compile:
+
+   ```
+   error[E0599]: no method named `output_offer` found for struct `runtime::HeatGenerator` in the current scope
+   error[E0599]: no method named `emit` found for struct `runtime::HeatGenerator` in the current scope
+   ```
+
+2. **Glue red** (mutation, restored): `facing_of("north")` forced to `East` →
+   `heat_generator::tests::the_emitting_face_is_the_one_the_block_state_names` **FAILED**,
+   `left: Some(East) right: Some(North)`; restored, green.
+3. **In-game red** (`ports/_shared/evidence/mekanismgenerators-e2e/e2e-launcher-emission-red.log`):
+   the same two-mod game built from sources with the `emit_front` call removed — the front cube stays
+   at 0 while the generator's buffer grows:
+
+   ```
+     front cube: 0 FE, back cube: 0 FE
+     generator held 56432 FE, now: mekanismgenerators:heat_generator at 0,100,0: 73568/160000 FE, …
+     front cube: 0 -> 0 FE (+0), back cube: 0 FE
+   FAIL: the buffered FE did not reach the front cube (+0 of 56432): mekanismgenerators:heat_generator at 0,100,0: 73568/160000 FE, lava 70/24000 mB, temp 675.5 K, producing 112 FE/t, burning true, facing north, fuel empty, t=964
+   EXIT:1
+   ```
+
+   Restored and rebuilt: the same scenario passes (below). The launcher keys a native build on the
+   sources (the red and green builds are different versions, `0fcd04c07fd0` vs `0eb8c98ee99b`), so
+   the red run really ran different code.
+
+### Ladder (all through `ports/tools/build-slot.sh`, from inside the port)
+
+| Step | Command | Result | Evidence |
+|---|---|---|---|
+| unit tests | `cargo test` | **28 passed**, 0 failed, exit 0 | `sdk-test.log` |
+| lints | `cargo clippy --all-targets -- -D warnings` | exit 0, 0 warnings | `sdk-clippy.log` |
+| format | `cargo fmt --check` | clean | `sdk-fmt.log` |
+| build ×2 | `rm -f Cargo.lock` + `cargo horizon-mod build` | **byte-identical** (`cmp` exit 0) | `sdk-build.log`, `sdk-build-2.log` |
+| registry check | `cargo horizon-mod check mekanismgenerators.hmod` | `0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **35,034 B**, exit 0 | `sdk-check.log` |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` after `sha256sum` | `0a875da  made for`, exit 0 | `sdk-fits.log` |
+| fits, another build | `… --build 0b14f8a` | `0b14f8a  fits`, exit 0 | `sdk-fits-other.log` |
+| package gate | `verify-sdk-package.py mekanismgenerators` | 1/1 | report |
+| in-game (two mods) | `tools/build-game.sh build` then the leg | `PASS` + `EXIT:0` | `mekanismgenerators-e2e/e2e-launcher.log` |
+| control | same scenario, `GAME=$PLAIN_GAME` | `FAIL` (`Unknown block type …`) + `EXIT:1` | `…-control.log` |
+| fail-capable | `SELFTEST=1` | `FAIL` + `EXIT:1` | `…-selftest.log` |
+| log checker | `check-e2e-logs.py mekanismgenerators-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` | report |
+
+**Package:** `mekanismgenerators.hmod` **35,034 B**, SHA-256
+`c68cf4f1cd3318083da0169be1d8ee192bce74cbdeca918124f0e28647192ad9`, **24 entries**, no
+`Cargo.lock`. A copy of the delivered file is at
+`ports/_shared/evidence/mekanismgenerators/mekanismgenerators.hmod` with its hash in
+`sdk-sha256.txt`.
+
+### The in-game check (quoted from `e2e-launcher.log`)
+
+The game carries **two** packages — this one and the parent `mekanism` — because the acceptor is the
+parent's own block. `tools/build-game.sh` stages both and calls `native-build` on the folder (the
+launcher takes "a mod folder … or a folder of them"); the export lands where
+`launcher-game.sh env mekanismgenerators` expects it.
+
+```
+== the front face emits into an acceptor ==
+  info(0,100,0): mekanismgenerators:heat_generator at 0,100,0: 55536/160000 FE, lava 0/24000 mB, temp 675.5 K, producing 112 FE/t, burning true, facing north, fuel minecraft:coal x1, t=802
+  block(0,100,-1) = mekanism:basic_energy_cube
+  block(0,100,1) = mekanism:basic_energy_cube
+  front cube: 15300 FE, back cube: 0 FE
+  generator held 56432 FE, now: mekanismgenerators:heat_generator at 0,100,0: 0/160000 FE, lava 0/24000 mB, temp 675.5 K, producing 112 FE/t, burning true, facing north, fuel minecraft:coal x1, t=962
+  front cube: 15300 -> 71888 FE (+56588), back cube: 0 FE
+== the emit rate is the generator's own production ==
+  set(0,100,0) = 0 FE
+  front cube: 76144 -> 88240 FE over ~100 ticks (gain 12096)
+== counterfactual: with the front cube gone the generator stores its own FE ==
+  set(0,100,0) = 0 FE
+  mekanismgenerators:heat_generator at 0,100,0: 11984/160000 FE, lava 20/24000 mB, temp 675.5 K, producing 112 FE/t, burning true, facing north, fuel empty, t=1208
+```
+
+What the numbers prove:
+
+- the generator held **56,432 FE** and the cube in front of its `facing` (north, -z) went from 15,300
+  to **71,888 FE** (+56,588): the whole buffer left at up to 1,020 FE/t, and the generator then holds
+  **0** — it is emitting, not hoarding;
+- a cube on the **opposite** face stayed at **0 FE** through both windows, so the emission follows the
+  block state's `facing` and is not a radial push;
+- with the buffer drained, the front cube gains **12,096 FE in ~100 ticks**, the generator's own
+  112 FE/t within chat latency (the same rate the no-acceptor control measures in its buffer);
+- with the front cube removed the generator stores **11,984 FE in ~100 ticks** itself, so the
+  emission is what moves the energy, not a loss.
+
+### Coverage after this slice
+
+| Family (jar) | State | Where |
+|---|---|---|
+| fuel slot → lava, the tank, the capacitor, the Carnot conversion, the FE buffer | `tested` | slice 1's ladder + this leg (`burning true`, `112 FE/t`, full-buffer/drain controls) |
+| **energy output to a neighbour** | `tested` | this leg, §"the front face emits": buffer dump + steady rate + back-face differential + counterfactual |
+| `/mekanismgenerators info` | `tested` | every step asserts the parsed line, now including `facing` |
+| `/mekanismgenerators energy` | `tested` | `set(…) = N FE` replies in this leg |
+| block, item, pickaxe tag, creative tab | `tested` | placement + `Unknown block type` control |
+| the carried recipe (`heat_generator.json`) | `blocked(no c:ingots/osmium provider)` | loads, and the game logs `recipes: invalid ingredient … "#c:ingots/osmium"`; nothing in this campaign's mods registers that tag, so it cannot be crafted here and is **not** claimed |
+| fluid capability, GUI/menu, `active` model + light, comparator, custom shape, side configuration | `not ported` | §"Deviations and gaps" 2–8 |
+| the other generators, reactors, turbine, suit modules | `not ported` | §"Deviations and gaps" 11 |
+
+No upstream defect was found in this family: the emit side, the rate and the "only what the acceptor
+takes" arithmetic all match `TileEntityGenerator`/`CableUtils` at the tag read.
+
+### Gaps after slice 2
+
+1. ~~No FE output~~ — **closed**: the generator emits up to 1,020 FE/t into the block on its
+   `facing` side.
+2. **One acceptor, one side**, as upstream (a second front neighbour is not a thing in a block
+   world), but the buffer is *also* still declared extractable on all six faces, so a cable may pull
+   in parallel with the push (upstream exposes the container on the front only). Unchanged from
+   slice 1 and recorded as deviation 6.
+3. **The emit side follows the carried `facing` property**, read every tick. Upstream caches the
+   output neighbour and invalidates the cache when the block is rotated; reading the state each tick
+   gives the same result (a rotated block emits from its new face) without the cache.
+4. **`producing N FE/t` still reports the production rate**, not the net change of the buffer: with an
+   acceptor attached the buffer stays at 0 while the readout says 112 FE/t, which is what the FE/t
+   means (upstream's `getProductionRate`).
+5. Everything else from §"Deviations and gaps (slice 1)" is unchanged (fluid capability, GUI,
+   `active`, comparator, geometry, side configuration, the other generators, reactors, turbine).
+
+## Next slice
+
+The next family in the port's own gap list is **gap 2, the lava tank as a real fluid capability**
+(`Registrar::block_fluids` on the block key, a `ModFluidTanks` handler holding
+`mekanismgenerators:lava`): upstream's `lavaTank` is an `IFluidHandler`, so today a pipe can neither
+fill it nor read it, and the passive lava-side heat can only be reached from the fuel slot. It is a
+`machines` feature (`block_fluids`, one tank, no new block or renderer), and it is provable in game
+with the same two-mod build plus `rangedpumps` (also ported): `rangedpumps:pump` pushes the fluid it
+holds into every adjacent handler, so with the pump drawing lava and the generator beside it,
+`/mekanismgenerators info 0 100 0` must show a **rising `lava`** (`lava N/24000 mB`, N > 0 with an
+empty fuel slot) and — with no lava beside the block and no fuel — a `temp` above **300.0 K** after
+the tank fills, while the same run with the pump absent keeps `lava 0` and `temp 300.0 K`. The
+recipe family stays `blocked(no c:ingots/osmium provider)`.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
